@@ -38,15 +38,22 @@ vosk_samplerate = 16000
 vosk_device = 1
 q = queue.Queue()
 
-xls = ExcelFile('data.xlsx')
-df = xls.parse(xls.sheet_names[0])
-dataset = df.to_dict()
-xls.close()
 
-xls = ExcelFile('variants.xlsx')
-df = xls.parse(xls.sheet_names[0])
-variants = df.to_dict()
-xls.close()
+def load_db():
+    global dataset
+    global variants
+
+    xls = ExcelFile('data.xlsx')
+    df = xls.parse(xls.sheet_names[0])
+    dataset = df.to_dict()
+    xls.close()
+
+    xls = ExcelFile('variants.xlsx')
+    df = xls.parse(xls.sheet_names[0])
+    variants = df.to_dict()
+    xls.close()
+
+load_db()
 
 
 last_index = None
@@ -58,6 +65,7 @@ model, _ = torch.hub.load(repo_or_dir="snakers4/silero-models",
 
 model.to(device)
 
+print(dataset)
 
 def respond(text):
     audio = model.apply_tts(text=text,
@@ -87,15 +95,20 @@ with sd.RawInputStream(samplerate=vosk_samplerate, blocksize=8000, device=vosk_d
                 continue
             if fuzz.partial_ratio(result, "ярик") < 80:
                 continue
+            if fuzz.partial_ratio(result, "обнови базу данных") > 80:
+                load_db()
+                respond("Перезагруска б+азы данных - успешно!")
+                continue
             print(result)
             matches = []
 
             if json.loads(result)["text"] != "ярик":
-
                 for i in range(len(dataset["A"])):
                     name = dataset["A"][i]
 
                     filtered_str = filter(result)
+                    print(filtered_str)
+                    print(name)
                     matches.append(fuzz.partial_ratio(filtered_str, name))
 
                     print(result)
@@ -117,3 +130,6 @@ with sd.RawInputStream(samplerate=vosk_samplerate, blocksize=8000, device=vosk_d
                     name = dataset["A"][matches.index(max(matches))]
                     current_text = f"{info}."
                     respond(f"... ... {current_text} ... ...")
+            else:
+                print("Ярик!")
+                respond("Я р+обот-гид Ярик... Я могу рассказать вам о Чувашии! Жду вопросов!")

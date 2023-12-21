@@ -1,0 +1,2 @@
+python .\yarik.py
+pause
