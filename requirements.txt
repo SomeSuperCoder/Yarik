@@ -2,5 +2,8 @@ fuzzywuzzy==0.18.0
 pandas==2.1.3
 pyserial==3.5
 sounddevice==0.4.6
-torch
+# torch   - Install manually
 vosk==0.3.45
+openpyxl
+omegaconf
+python-Levenshtein

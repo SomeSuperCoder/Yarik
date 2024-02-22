@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+
 import random
 
 from pandas import *
@@ -9,15 +10,16 @@ import vosk
 import sys
 import queue
 from fuzzywuzzy import fuzz
+import torchaudio
 import json
-import math
+import hashlib
+import os
 
-def filter(result):
+def filter(result_text):
     with open("remove_words.json", "r", encoding='utf-8') as file:
         data = json.loads(file.read())
-        print(data)
 
-    filtered_str = json.loads(result)["text"]
+    filtered_str = result_text
     for i in data:
         filtered_str = filtered_str.replace(i, "")
 
@@ -25,6 +27,20 @@ def filter(result):
 
 playing_now = False
 
+# Names
+robot_name = "ярик"
+cache_dir = "./cache"
+
+# Builtins
+builtin = {
+    "HELLO": "Зравствуйте!",
+    "I_AM_LISTENING": f"{robot_name} слушает",
+    "IDK": "... В мо+ей базе данных пока нет ответа на данный вопрос ...",
+    "I_AM": f"Я р+обот-гид {robot_name}... Я могу рассказать вам о Чувашии! Жду вопросов!",
+    "RELOAD_SUCCESS": "Перезагруска б+азы данных - успешно!"
+}
+
+# Silero config
 lang = "ru"
 model_id = "ru_v3"
 sample_rate = 48000
@@ -33,13 +49,16 @@ put_accent = True
 put_yo = True
 device = torch.device("cpu")
 
+# Vosk config
 vosk_model = vosk.Model("model")
 vosk_samplerate = 16000
-vosk_device = 1
+vosk_device = 6
 q = queue.Queue()
 
 
 def load_db():
+    print("Обновление БД...")
+
     global dataset
     global variants
 
@@ -53,8 +72,43 @@ def load_db():
     variants = df.to_dict()
     xls.close()
 
-load_db()
+    now_should_exist = []
 
+    file_list = os.listdir(cache_dir)
+    need_to_process = []
+    done = 0
+
+    for _, answer in dataset["B"].items():
+        need_to_process.append(answer) if not answer.startswith("cmd_") else ...
+
+    for _, answer in variants["answers"].items():
+        [need_to_process.append(i) for i in answer.split(";")]
+
+    for _, answer in builtin.items():
+        need_to_process.append(answer)
+
+    for answer in need_to_process:
+        done += 1
+        answer_hash = hashlib.sha256(answer.encode()).hexdigest()
+        now_should_exist.append(answer_hash)
+
+        print(answer)
+        print(answer_hash)
+
+        if os.path.isfile(os.path.join(cache_dir, answer_hash)):
+            print("Already exists")
+            continue
+
+        audio = respond_logic(answer)
+
+        with open(os.path.join(cache_dir, answer_hash), "w") as f:
+            f.write(json.dumps(audio))
+
+        print(f"{round(done/len(need_to_process) * 100, 2)}% done")
+
+    for file in file_list:
+        if file not in now_should_exist:
+            os.remove(os.path.join(cache_dir, file))
 
 last_index = None
 
@@ -65,22 +119,38 @@ model, _ = torch.hub.load(repo_or_dir="snakers4/silero-models",
 
 model.to(device)
 
-print(dataset)
-
 def respond(text):
-    audio = model.apply_tts(text=text,
-                            speaker=speaker,
-                            sample_rate=sample_rate,
-                            put_accent=put_accent,
-                            put_yo=put_yo)
+    with open(os.path.join(cache_dir, hashlib.sha256(text.encode()).hexdigest()), "r") as f:
+        audio = torch.Tensor(json.loads(f.read()))
+
     sd.play(audio, sample_rate * 1.2)
     time.sleep((len(audio) / sample_rate) + 1)
     sd.stop()
+
+def respond_logic(text):
+    """
+    This function should not be called directly
+    """
+
+    return model.apply_tts(text=text,
+                            speaker=speaker,
+                            sample_rate=sample_rate,
+                            put_accent=put_accent,
+                            put_yo=put_yo).numpy().tolist()
 
 def callback(indata, frames, time, status):
     if status:
         print(status, file=sys.stderr)
     q.put(bytes(indata))
+
+
+# The program logic starts here
+
+load_db()
+
+respond(builtin["HELLO"])
+respond(builtin["I_AM_LISTENING"])
+
 
 with sd.RawInputStream(samplerate=vosk_samplerate, blocksize=8000, device=vosk_device, dtype="int16",
                        channels=1, callback=callback):
@@ -91,45 +161,37 @@ with sd.RawInputStream(samplerate=vosk_samplerate, blocksize=8000, device=vosk_d
 
         if rec.AcceptWaveform(data):
             result: str = rec.Result()
-            if json.loads(result)["text"] == "":
+            result_text = json.loads(result)["text"]
+            if result_text == "":
                 continue
-            if fuzz.partial_ratio(result, "ярик") < 80:
+            if fuzz.partial_ratio(result, robot_name) < 75:
                 continue
             if fuzz.partial_ratio(result, "обнови базу данных") > 80:
                 load_db()
-                respond("Перезагруска б+азы данных - успешно!")
+                respond(builtin["RELOAD_SUCCESS"])
                 continue
-            print(result)
+
             matches = []
 
-            if json.loads(result)["text"] != "ярик":
+            if result_text != robot_name:
+                print(f"Слышу: {result_text}")
                 for i in range(len(dataset["A"])):
                     name = dataset["A"][i]
 
-                    filtered_str = filter(result)
-                    print(filtered_str)
-                    print(name)
+                    filtered_str = filter(result_text)
                     matches.append(fuzz.partial_ratio(filtered_str, name))
 
-                    print(result)
-                    print(f"Filtered: {filtered_str}")
-                    print(matches)
-
-                    print(f"The index is: {matches.index(max(matches))}")
-
-                # if not "ярик" in result:
-                #     continue
-
                 if max(matches) < 70:
-                    respond("... В мо+ей базе данных пока нет ответа на данный вопрос ...")
+                    respond(builtin["IDK"])
                 elif dataset["B"][matches.index(max(matches))].startswith("cmd_"):
-                    print(variants)
-                    respond(random.choice(list(variants["answers"].values())[list(variants["cmd_id"].values()).index(dataset["B"][matches.index(max(matches))])].split(";")))
+                    chosen = random.choice(list(variants["answers"].values())[list(variants["cmd_id"].values()).index(dataset["B"][matches.index(max(matches))])].split(";"))  
+                    print(f"Говорю: {chosen}")
+                    respond(chosen)
                 else:
                     info = dataset["B"][matches.index(max(matches))]
                     name = dataset["A"][matches.index(max(matches))]
-                    current_text = f"{info}."
-                    respond(f"... ... {current_text} ... ...")
+                    current_text = f"{info}"
+                    print(f"Говорю: {current_text}")
+                    respond(current_text) # TODO: add .... ... TEXT ... ...
             else:
-                print("Ярик!")
-                respond("Я р+обот-гид Ярик... Я могу рассказать вам о Чувашии! Жду вопросов!")
+                respond(builtin["I_AM"])
